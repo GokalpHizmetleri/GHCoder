@@ -24,6 +24,7 @@ import httpx
 from backend_models import (
     get_inference_client, 
     get_real_model_id,
+    get_allowed_models,
     is_native_sdk_model,
     is_mistral_model
 )
@@ -223,6 +224,7 @@ class ModelInfo(BaseModel):
     name: str
     id: str
     description: str
+    supports_images: bool = False
 
 
 class CodeGenerationResponse(BaseModel):
@@ -359,14 +361,17 @@ async def root():
 
 @app.get("/api/models", response_model=List[ModelInfo])
 async def get_models():
-    """Get available AI models"""
+    """Get available AI models (only models currently confirmed free)"""
+    allowed = get_allowed_models()
     return [
         ModelInfo(
             name=model["name"],
             id=model["id"],
-            description=model["description"]
+            description=model["description"],
+            supports_images=model["supports_images"]
         )
         for model in AVAILABLE_MODELS
+        if model["id"] in allowed
     ]
 
 

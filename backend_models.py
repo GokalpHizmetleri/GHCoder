@@ -10,11 +10,23 @@ Cost safety: only Zen models verified as $0 (input and output) are
 reachable, and the check fails closed. Any unknown, renamed, or
 repriced model id is rejected before any API call is made.
 """
+import json
 import os
+import threading
+import time
+import urllib.request
 
 from openai import OpenAI
 
 ZEN_BASE_URL = "https://opencode.ai/zen/v1"
+
+# Pricing revalidation. Zen exposes no public priced model API of its own,
+# so prices are re-checked against models.dev (the open model/pricing
+# database the OpenCode team maintains and links from its docs).
+_PRICING_URL = "https://models.dev/api.json"
+_PRICING_TTL_SECONDS = 3600  # re-verify prices at most once an hour
+_pricing_lock = threading.Lock()
+_pricing_snapshot = {"checked_at": 0.0, "zero_cost_ids": None}
 
 # OpenCode Zen model ids verified zero-cost (input $0 and output $0) on
 # 2026-10-24 against https://models.dev/api.json (provider "opencode") and
@@ -32,18 +44,65 @@ FREE_ZEN_MODELS = {
 }
 
 
+def _fetch_zero_cost_ids():
+    """Return Zen model ids currently priced at exactly $0 in/$0 out.
+
+    Returns None when pricing cannot be confirmed (fetch/parse failure or
+    missing data) so callers can fail closed.
+    """
+    try:
+        req = urllib.request.Request(
+            _PRICING_URL, headers={"User-Agent": "anycoder-backend"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        models = data["opencode"]["models"]
+        return {
+            mid
+            for mid, m in models.items()
+            if m.get("cost", {}).get("input") == 0
+            and m.get("cost", {}).get("output") == 0
+        }
+    except Exception as exc:
+        print(f"[Pricing] WARNING: cannot confirm OpenCode Zen pricing: {exc}")
+        return None
+
+
+def get_allowed_models():
+    """Model ids that may be called right now.
+
+    An id is allowed only when it is on the build-time free allowlist AND
+    a recent pricing check confirmed it still costs $0. Fails closed: when
+    pricing has never been confirmed in this process, nothing is allowed.
+    When a refresh fails, the last confirmed snapshot keeps serving.
+    """
+    now = time.time()
+    with _pricing_lock:
+        snapshot = _pricing_snapshot["zero_cost_ids"]
+        stale = now - _pricing_snapshot["checked_at"] > _PRICING_TTL_SECONDS
+        if snapshot is None or stale:
+            ids = _fetch_zero_cost_ids()
+            if ids is not None:
+                _pricing_snapshot["zero_cost_ids"] = ids
+                _pricing_snapshot["checked_at"] = now
+                snapshot = ids
+    if snapshot is None:
+        return set()
+    return FREE_ZEN_MODELS & snapshot
+
+
 def get_inference_client(model_id: str, provider: str = "auto"):
     """
     Return an OpenAI-compatible client pointed at OpenCode Zen.
 
-    Fails closed in both directions: model ids outside FREE_ZEN_MODELS are
-    rejected so the app can never call a paid model, and a missing server
-    key raises an explicit error instead of failing silently.
+    Fails closed in both directions: a model id is accepted only while it
+    is on the free allowlist AND currently confirmed $0 (re-checked against
+    live pricing at least hourly), so a repriced or renamed model can never
+    be called. A missing server key raises an explicit error.
     """
-    if model_id not in FREE_ZEN_MODELS:
+    if model_id not in get_allowed_models():
         raise ValueError(
-            f"Model '{model_id}' is not available. "
-            "Only verified free OpenCode Zen models are allowed."
+            f"Model '{model_id}' is not available. Only OpenCode Zen models "
+            "currently confirmed free ($0) are allowed."
         )
 
     api_key = os.getenv("OPENCODE_ZEN_API_KEY")
