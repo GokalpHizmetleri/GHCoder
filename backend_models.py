@@ -71,9 +71,11 @@ def get_allowed_models():
     """Model ids that may be called right now.
 
     An id is allowed only when it is on the build-time free allowlist AND
-    a recent pricing check confirmed it still costs $0. Fails closed: when
-    pricing has never been confirmed in this process, nothing is allowed.
-    When a refresh fails, the last confirmed snapshot keeps serving.
+    a recent pricing check confirmed it still costs $0. Fails closed in
+    both directions: when pricing has never been confirmed, and when a
+    stale snapshot cannot be re-confirmed, nothing is allowed. Note this
+    is best-effort: an aggregator price check cannot guarantee what the
+    provider actually bills.
     """
     now = time.time()
     with _pricing_lock:
@@ -85,6 +87,10 @@ def get_allowed_models():
                 _pricing_snapshot["zero_cost_ids"] = ids
                 _pricing_snapshot["checked_at"] = now
                 snapshot = ids
+            else:
+                # Cannot confirm current pricing: drop the stale snapshot
+                # and block all model calls until confirmation succeeds.
+                snapshot = None
     if snapshot is None:
         return set()
     return FREE_ZEN_MODELS & snapshot
