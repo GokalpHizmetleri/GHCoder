@@ -153,6 +153,10 @@ models:
 - HuggingFace Hub (deploy/import)
 - Server-Sent Events (SSE)
 
+## 🙏 Attribution
+
+GHCoder is a fork of [AnyCoder](https://huggingface.co/spaces/akhaliq/anycoder) by [@akhaliq](https://huggingface.co/akhaliq), modified to run on OpenCode Zen free models with a server-side API key and zero-cost enforcement.
+
 ## 📄 License
 
-MIT
+MIT (same as upstream AnyCoder)
